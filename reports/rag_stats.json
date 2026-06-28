@@ -1,0 +1,9 @@
+{
+    "total_faqs": 42,
+    "categories": 10,
+    "languages": [
+        "English",
+        "Roman Urdu"
+    ],
+    "index_path": "models/rag_index.joblib"
+}

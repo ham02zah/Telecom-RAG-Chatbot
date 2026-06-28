@@ -1,0 +1,17 @@
+# Minimal deps for Jazz Telecom RAG Chatbot (Docker-friendly)
+# Do NOT add matplotlib, seaborn, or full langchain — they bloat the image.
+
+numpy==1.26.4
+pandas==2.2.3
+scikit-learn==1.4.2
+joblib==1.4.2
+plotly==5.24.1
+streamlit==1.39.0
+langgraph==0.2.45
+langchain-core==0.3.21
+langchain-ollama==0.2.0
+python-dotenv==1.0.1
+
+#python3.11 -m pip install -r requirements.txt
+#python3.11 -m src.build_index
+#python3.11 -m streamlit run app.py

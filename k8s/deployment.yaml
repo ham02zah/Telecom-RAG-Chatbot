@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jazz-telecom-rag-chatbot
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: jazz-telecom-rag-chatbot
+  template:
+    metadata:
+      labels:
+        app: jazz-telecom-rag-chatbot
+    spec:
+      containers:
+        - name: jazz-telecom-rag-chatbot
+          image: jazz-telecom-rag-chatbot:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8501
+          env:
+            - name: USE_OLLAMA
+              value: "false"
+            - name: RAG_TOP_K
+              value: "3"
