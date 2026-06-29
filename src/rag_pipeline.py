@@ -1,43 +1,44 @@
+from dataclasses import dataclass
+
 import joblib
 import numpy as np
-
 from sklearn.metrics.pairwise import cosine_similarity
 
-from src.config import INDEX_PATH, RAG_TOP_K
+from src.config import INDEX_PATH, TOP_K
 from src.text_normalizer import normalize_text
 
 
-def load_index():
-    """Load saved RAG artifacts."""
-    return joblib.load(INDEX_PATH)
+@dataclass
+class RetrievedFAQ:
+    category: str
+    language: str
+    question: str
+    answer: str
+    score: float
 
 
-def retrieve_documents(query, top_k=RAG_TOP_K):
-    """
-    Retrieve most relevant FAQ chunks for a user query.
-    """
-    artifacts = load_index()
+class RAGPipeline:
+    def __init__(self, index_path=INDEX_PATH):
+        payload = joblib.load(index_path)
+        self.vectorizer = payload["vectorizer"]
+        self.matrix = payload["matrix"]
+        self.records = payload["records"]
 
-    vectorizer = artifacts["vectorizer"]
-    tfidf_matrix = artifacts["tfidf_matrix"]
-    chunks = artifacts["chunks"]
+    def retrieve(self, query: str, top_k: int = TOP_K) -> list[RetrievedFAQ]:
+        query_vec = self.vectorizer.transform([normalize_text(query)])
+        scores = cosine_similarity(query_vec, self.matrix).flatten()
+        top_indices = np.argsort(scores)[::-1][:top_k]
 
-    normalized_query = normalize_text(query)
-
-    query_vector = vectorizer.transform([normalized_query])
-
-    similarity_scores = cosine_similarity(query_vector, tfidf_matrix).flatten()
-
-    top_indices = np.argsort(similarity_scores)[-top_k:][::-1]
-
-    results = []
-
-    for index in top_indices:
-        results.append(
-            {
-                **chunks[index],
-                "score": float(similarity_scores[index]),
-            }
-        )
-
-    return results
+        results: list[RetrievedFAQ] = []
+        for idx in top_indices:
+            row = self.records[int(idx)]
+            results.append(
+                RetrievedFAQ(
+                    category=row["category"],
+                    language=row["language"],
+                    question=row["question"],
+                    answer=row["answer"],
+                    score=float(scores[idx]),
+                )
+            )
+        return results

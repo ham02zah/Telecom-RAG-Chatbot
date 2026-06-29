@@ -1,13 +1,13 @@
-import os
 import json
+import os
+from pathlib import Path
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
-from src.config import INDEX_PATH, DATA_PATH
+from src.config import DATA_PATH, INDEX_PATH, USE_OLLAMA
 from src.support_graph import run_support_workflow
-from src.rag_pipeline import retrieve_documents
-
 
 REPORTS_PATH = "reports/rag_stats.json"
 
@@ -18,6 +18,7 @@ PAGES = [
     "Visualization Gallery",
 ]
 
+JAZZ_RED = "#dc143c"
 
 st.set_page_config(
     page_title="Jazz Telecom Support AI",
@@ -25,7 +26,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
-
 
 CUSTOM_CSS = """
 <style>
@@ -258,9 +258,7 @@ div.stButton > button:first-child {
 </style>
 """
 
-
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-
 
 if "menu_open" not in st.session_state:
     st.session_state.menu_open = True
@@ -271,6 +269,13 @@ if "page" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
+if "support_query" not in st.session_state:
+    st.session_state.support_query = ""
+
+
+def set_support_query(example: str) -> None:
+    st.session_state.support_query = example
+
 
 def toggle_menu():
     st.session_state.menu_open = not st.session_state.menu_open
@@ -278,14 +283,30 @@ def toggle_menu():
 
 @st.cache_resource
 def check_index():
-    return os.path.exists(INDEX_PATH)
+    return Path(INDEX_PATH).exists()
 
 
 def load_stats():
-    if not os.path.exists(REPORTS_PATH):
-        return None
-    with open(REPORTS_PATH, "r") as file:
-        return json.load(file)
+    if os.path.exists(REPORTS_PATH):
+        with open(REPORTS_PATH, "r", encoding="utf-8") as file:
+            return json.load(file)
+
+    df = pd.read_csv(DATA_PATH)
+    return {
+        "total_faqs": len(df),
+        "categories": int(df["category"].nunique()),
+        "languages": sorted(df["language"].unique().tolist()),
+    }
+
+
+def match_to_dict(match):
+    return {
+        "category": match.category,
+        "language": match.language,
+        "question": match.question,
+        "answer": match.answer,
+        "score": float(match.score),
+    }
 
 
 def display_metric_card(label, value):
@@ -301,7 +322,7 @@ def display_metric_card(label, value):
 
 
 index_exists = check_index()
-stats = load_stats()
+stats = load_stats() if index_exists else None
 
 
 top_col1, top_col2 = st.columns([0.16, 0.84])
@@ -322,7 +343,6 @@ with top_col2:
         unsafe_allow_html=True,
     )
 
-
 if not index_exists:
     st.error(
         "RAG index not found. Build it first by running:\n\n"
@@ -330,12 +350,10 @@ if not index_exists:
     )
     st.stop()
 
-
 if st.session_state.menu_open:
     menu_col, content_col = st.columns([0.25, 0.75], gap="large")
 else:
     content_col = st.container()
-
 
 if st.session_state.menu_open:
     with menu_col:
@@ -358,21 +376,21 @@ if st.session_state.menu_open:
 
             st.session_state.page = selected_page
 
+            ollama_status = "enabled" if USE_OLLAMA else "disabled (FAQ fallback)"
             st.markdown(
-                """
+                f"""
                 <div class="nav-section">Project Features</div>
                 <div class="feature-box">
                     • English + Roman Urdu support<br>
                     • TF-IDF RAG retrieval<br>
                     • LangGraph workflow<br>
-                    • Ollama answer generation<br>
+                    • Ollama: {ollama_status}<br>
                     • FAQ source citation<br>
                     • JazzCash-inspired UI
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-
 
 with content_col:
     page = st.session_state.page
@@ -393,12 +411,6 @@ with content_col:
                 unsafe_allow_html=True,
             )
 
-            user_query = st.text_area(
-                "Ask your support question",
-                height=160,
-                placeholder="Example: balance kaise check karun? / How do I send money using JazzCash?",
-            )
-
             example_questions = [
                 "How can I check my balance?",
                 "internet package activate kaise karein?",
@@ -408,13 +420,20 @@ with content_col:
             ]
 
             st.write("Quick examples:")
-            example_col1, example_col2 = st.columns(2)
-
             for index, example in enumerate(example_questions):
-                target_col = example_col1 if index % 2 == 0 else example_col2
-                with target_col:
-                    if st.button(example, key=f"example_{index}"):
-                        user_query = example
+                st.button(
+                    example,
+                    key=f"example_{index}",
+                    on_click=set_support_query,
+                    args=(example,),
+                )
+
+            st.text_area(
+                "Ask your support question",
+                height=160,
+                placeholder="Example: balance kaise check karun? / How do I send money using JazzCash?",
+                key="support_query",
+            )
 
             ask_button = st.button("Get Support Answer")
 
@@ -432,18 +451,22 @@ with content_col:
             )
 
             if ask_button:
-                if not user_query.strip():
+                user_query = st.session_state.support_query.strip()
+                if not user_query:
                     st.warning("Please enter a question.")
                 else:
                     with st.spinner("Searching knowledge base and generating answer..."):
                         workflow_result = run_support_workflow(user_query)
 
+                    answer_source = "Ollama + RAG" if USE_OLLAMA else "FAQ Fallback (RAG)"
+                    sources = [match_to_dict(m) for m in workflow_result["matches"]]
+
                     st.session_state.chat_history.append(
                         {
                             "question": user_query,
-                            "answer": workflow_result["final_answer"],
-                            "sources": workflow_result["retrieved_docs"],
-                            "answer_source": workflow_result["answer_source"],
+                            "answer": workflow_result["answer"],
+                            "sources": sources,
+                            "answer_source": answer_source,
                         }
                     )
 
@@ -549,6 +572,9 @@ with content_col:
                 display_metric_card("Languages", str(len(stats["languages"])))
 
             st.write("Supported languages:", ", ".join(stats["languages"]))
+
+            df = pd.read_csv(DATA_PATH)
+            st.bar_chart(df["category"].value_counts())
         else:
             st.warning("RAG stats not found. Run build_index first.")
 
@@ -565,6 +591,8 @@ with content_col:
             unsafe_allow_html=True,
         )
 
+        df = pd.read_csv(DATA_PATH)
+
         graph_paths = {
             "Category Distribution": "visualizations/category_distribution.png",
             "Language Distribution": "visualizations/language_distribution.png",
@@ -577,5 +605,33 @@ with content_col:
             with tab:
                 if os.path.exists(path):
                     st.image(path, use_container_width=True)
+                elif title == "Category Distribution":
+                    fig = px.pie(
+                        df,
+                        names="category",
+                        title="FAQ Distribution by Category",
+                        color_discrete_sequence=px.colors.sequential.Reds_r,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                elif title == "Language Distribution":
+                    lang_df = df["language"].value_counts().reset_index()
+                    lang_df.columns = ["language", "count"]
+                    fig = px.bar(
+                        lang_df,
+                        x="language",
+                        y="count",
+                        title="FAQs by Language",
+                        color_discrete_sequence=[JAZZ_RED],
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
-                    st.warning(f"{title} not found. Run build_index first.")
+                    cat_df = df["category"].value_counts().reset_index()
+                    cat_df.columns = ["category", "count"]
+                    fig = px.bar(
+                        cat_df,
+                        x="category",
+                        y="count",
+                        title="Top FAQ Categories",
+                        color_discrete_sequence=px.colors.sequential.Reds_r,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)

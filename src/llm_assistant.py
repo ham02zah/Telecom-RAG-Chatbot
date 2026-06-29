@@ -1,100 +1,61 @@
 import os
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_ollama import ChatOllama
-
-from src.config import OLLAMA_MODEL, OLLAMA_BASE_URL, USE_OLLAMA
+from src.config import OLLAMA_BASE_URL, OLLAMA_MODEL, USE_OLLAMA
+from src.rag_pipeline import RetrievedFAQ
 
 
-def build_context_from_results(results):
-    """Convert retrieved FAQ chunks into LLM context."""
-    context_parts = []
-
-    for index, result in enumerate(results, start=1):
-        context_parts.append(
-            f"Source {index}\n"
-            f"Category: {result['category']}\n"
-            f"Question: {result['question']}\n"
-            f"Answer: {result['answer']}\n"
-            f"Similarity Score: {result['score']:.4f}"
+def _format_context(matches: list[RetrievedFAQ]) -> str:
+    chunks = []
+    for item in matches:
+        chunks.append(
+            f"Category: {item.category}\n"
+            f"Question: {item.question}\n"
+            f"Answer: {item.answer}"
         )
-
-    return "\n\n".join(context_parts)
-
-
-def fallback_answer(query, results):
-    """Use best FAQ answer directly when Ollama is unavailable."""
-    if not results:
-        return {
-            "answer": "Sorry, I could not find relevant support information for your question. Please contact customer support.",
-            "source": "Fallback - no match",
-        }
-
-    best = results[0]
-
-    return {
-        "answer": best["answer"],
-        "source": f"{best['category']} | {best['question']}",
-    }
+    return "\n\n".join(chunks)
 
 
-def generate_support_answer(query, results):
-    """
-    Generate grounded support answer.
-
-    Local:
-    - uses Ollama through LangChain
-
-    Streamlit Cloud / no Ollama:
-    - returns best retrieved FAQ answer
-    """
-
-    if not USE_OLLAMA:
-        return fallback_answer(query, results)
-
-    context = build_context_from_results(results)
-
-    prompt = ChatPromptTemplate.from_template(
-        """
-You are a helpful telecom and JazzCash customer support assistant.
-
-Rules:
-- Answer only using the provided FAQ context.
-- If the answer is not in the context, say you do not know and ask the user to contact support.
-- Keep the answer short, clear, and customer-friendly.
-- If the user asked in Roman Urdu style, you may reply in simple Roman Urdu or English.
-- Do not invent package prices, codes, or policies.
-
-User Question:
-{query}
-
-FAQ Context:
-{context}
-
-Write a helpful support answer.
-"""
+def _fallback_answer(matches: list[RetrievedFAQ]) -> str:
+    if not matches:
+        return "Sorry, I could not find a matching FAQ. Please contact Jazz support at 111."
+    best = matches[0]
+    return (
+        f"**{best.question}**\n\n{best.answer}\n\n"
+        f"_Category: {best.category} | Confidence: {best.score:.2f}_"
     )
+
+
+def generate_answer(query: str, matches: list[RetrievedFAQ]) -> str:
+    if not USE_OLLAMA:
+        return _fallback_answer(matches)
+
+    try:
+        from langchain_ollama import ChatOllama
+        from langchain_core.messages import HumanMessage, SystemMessage
+    except ImportError:
+        return _fallback_answer(matches)
+
+    context = _format_context(matches)
+    system_prompt = (
+        "You are a helpful Jazz Telecom customer support assistant. "
+        "Answer using only the provided FAQ context. "
+        "Be concise, friendly, and accurate. "
+        "If the context does not contain the answer, say you are unsure and suggest contacting Jazz support."
+    )
+    user_prompt = f"Customer question:\n{query}\n\nFAQ context:\n{context}"
 
     try:
         llm = ChatOllama(
-            model=OLLAMA_MODEL,
             base_url=OLLAMA_BASE_URL,
+            model=OLLAMA_MODEL,
             temperature=0.2,
         )
-
-        chain = prompt | llm
-
-        response = chain.invoke(
-            {
-                "query": query,
-                "context": context,
-            }
+        response = llm.invoke(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]
         )
-
-        return {
-            "answer": response.content,
-            "source": f"Ollama model: {OLLAMA_MODEL}",
-        }
-
+        return response.content.strip()
     except Exception:
-        return fallback_answer(query, results)
+        return _fallback_answer(matches)
